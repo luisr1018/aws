@@ -1,0 +1,5 @@
+---
+# Worker-specific labels added to each agent node at join time.
+# Override per-host in inventory if needed.
+k3s_node_labels:
+  - "node-role.kubernetes.io/worker=true"

@@ -1,0 +1,109 @@
+---
+# ── Config directory ───────────────────────────────────────────────────────────
+- name: Ensure k3s config directory exists
+  ansible.builtin.file:
+    path: "{{ k3s_config_dir }}"
+    state: directory
+    mode: "0755"
+
+# ── Build the disabled-components list ────────────────────────────────────────
+- name: Write k3s server config file
+  ansible.builtin.template:
+    src: k3s-config.yaml.j2
+    dest: "{{ k3s_config_dir }}/config.yaml"
+    mode: "0600"
+  notify: Restart k3s
+
+# ── Bootstrap: initial master ─────────────────────────────────────────────────
+- name: Install k3s on initial master (cluster-init)
+  ansible.builtin.shell: |
+    curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_VERSION="{{ k3s_version }}" \
+      K3S_TOKEN="{{ k3s_token }}" \
+      sh -s - server \
+        --cluster-init \
+        --tls-san {{ k3s_initial_master_ip }} \
+        --node-ip {{ ansible_host }} \
+        --cluster-cidr {{ k3s_cluster_cidr }} \
+        --service-cidr {{ k3s_service_cidr }} \
+        --cluster-dns {{ k3s_cluster_dns }} \
+        --flannel-backend {{ k3s_flannel_backend }} \
+        {% for comp in k3s_disable_components %}--disable {{ comp }} {% endfor %}\
+        {{ k3s_server_extra_args }}
+  args:
+    creates: "{{ k3s_install_dir }}/k3s"
+  when: k3s_role == "initial_master"
+  register: k3s_initial_install
+
+- name: Wait for k3s API server to be ready (initial master)
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host }}"
+    port: 6443
+    delay: 10
+    timeout: 180
+  when: k3s_role == "initial_master"
+
+# ── Additional masters join the cluster ───────────────────────────────────────
+- name: Install k3s on additional masters
+  ansible.builtin.shell: |
+    curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_VERSION="{{ k3s_version }}" \
+      K3S_TOKEN="{{ k3s_token }}" \
+      sh -s - server \
+        --server {{ k3s_api_server_url }} \
+        --tls-san {{ k3s_initial_master_ip }} \
+        --node-ip {{ ansible_host }} \
+        --cluster-cidr {{ k3s_cluster_cidr }} \
+        --service-cidr {{ k3s_service_cidr }} \
+        --cluster-dns {{ k3s_cluster_dns }} \
+        --flannel-backend {{ k3s_flannel_backend }} \
+        {% for comp in k3s_disable_components %}--disable {{ comp }} {% endfor %}\
+        {{ k3s_server_extra_args }}
+  args:
+    creates: "{{ k3s_install_dir }}/k3s"
+  when: k3s_role == "additional_master"
+
+- name: Wait for k3s API server to be ready (additional masters)
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host }}"
+    port: 6443
+    delay: 10
+    timeout: 180
+  when: k3s_role == "additional_master"
+
+# ── Enable & start k3s service ─────────────────────────────────────────────────
+- name: Enable and start k3s service
+  ansible.builtin.systemd:
+    name: k3s
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# ── Fetch kubeconfig to control machine ───────────────────────────────────────
+- name: Fetch kubeconfig from initial master
+  ansible.builtin.fetch:
+    src: "{{ k3s_kubeconfig_output }}"
+    dest: "./kubeconfig-{{ inventory_hostname }}.yaml"
+    flat: true
+  when: k3s_role == "initial_master"
+
+- name: Replace 127.0.0.1 with actual master IP in local kubeconfig
+  ansible.builtin.replace:
+    path: "./kubeconfig-{{ inventory_hostname }}.yaml"
+    regexp: 'https://127\.0\.0\.1:6443'
+    replace: "{{ k3s_api_server_url }}"
+  delegate_to: localhost
+  become: false
+  when: k3s_role == "initial_master"
+
+# ── Verify cluster nodes ───────────────────────────────────────────────────────
+- name: List cluster nodes
+  ansible.builtin.command: k3s kubectl get nodes -o wide
+  register: node_list
+  changed_when: false
+  when: k3s_role == "initial_master"
+
+- name: Print cluster nodes
+  ansible.builtin.debug:
+    var: node_list.stdout_lines
+  when: k3s_role == "initial_master"

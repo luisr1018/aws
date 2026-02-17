@@ -1,0 +1,49 @@
+---
+# ── k3s Homelab Cluster Playbook ──────────────────────────────────────────────
+#
+# Usage:
+#   # Full install
+#   ansible-playbook -i inventory/hosts.yml site.yml
+#
+#   # Pass a custom cluster token (recommended over storing plaintext)
+#   ansible-playbook -i inventory/hosts.yml site.yml -e "k3s_token=$(openssl rand -hex 32)"
+#
+#   # Dry run
+#   ansible-playbook -i inventory/hosts.yml site.yml --check --diff
+#
+#   # Only prerequisites
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags prereqs
+#
+#   # Only masters
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags masters
+#
+#   # Only workers
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags workers
+
+# ── 1. System prerequisites (all nodes) ───────────────────────────────────────
+- name: Apply system prerequisites
+  hosts: all
+  become: true
+  gather_facts: true
+  tags: prereqs
+  roles:
+    - prereqs
+
+# ── 2. Bootstrap initial master ───────────────────────────────────────────────
+- name: Bootstrap initial k3s master
+  hosts: masters
+  become: true
+  gather_facts: true
+  tags: masters
+  serial: 1          # Process masters one at a time: initial first, then additional
+  roles:
+    - k3s-master
+
+# ── 3. Join worker nodes ───────────────────────────────────────────────────────
+- name: Join k3s worker nodes
+  hosts: workers
+  become: true
+  gather_facts: true
+  tags: workers
+  roles:
+    - k3s-worker

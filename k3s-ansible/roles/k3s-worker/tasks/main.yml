@@ -1,0 +1,33 @@
+---
+# ── Install k3s agent ──────────────────────────────────────────────────────────
+- name: Install k3s agent (worker)
+  ansible.builtin.shell: |
+    curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_VERSION="{{ k3s_version }}" \
+      K3S_URL="{{ k3s_api_server_url }}" \
+      K3S_TOKEN="{{ k3s_token }}" \
+      sh -s - agent \
+        --node-ip {{ ansible_host }} \
+        {% for label in k3s_node_labels %}--node-label {{ label }} {% endfor %}\
+        {{ k3s_agent_extra_args }}
+  args:
+    creates: "{{ k3s_install_dir }}/k3s"
+
+# ── Enable & start k3s-agent service ──────────────────────────────────────────
+- name: Enable and start k3s-agent service
+  ansible.builtin.systemd:
+    name: k3s-agent
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# ── Verify node joined the cluster ────────────────────────────────────────────
+- name: Wait for worker node to appear in cluster
+  ansible.builtin.command: >
+    k3s kubectl get node {{ inventory_hostname }} --no-headers
+  delegate_to: "{{ groups['masters'] | first }}"
+  register: worker_node_check
+  until: "'Ready' in worker_node_check.stdout"
+  retries: 12
+  delay: 10
+  changed_when: false
